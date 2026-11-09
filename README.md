@@ -216,9 +216,9 @@ Restoring the volume preserves auth tokens. Note: if the OAuth refresh token is 
 - `--high-mem` requires Colab Pro/Pro+ (not available on AI Plus).
 - Stop GPU sessions immediately after use (`stop`) — the 14× rate drains CU fast.
 
-### Known anomaly: balance always 0.00 (verified)
+### Known anomaly: balance always 0.00 (verified, AI Plus tier)
 
-`usage` reports `Current balance: 0.00 compute units` under **both** OAuth2 and ADC authentication (two independent credential systems), while session creation and code execution work normally and the usage rate ticks up while a session is active (0.08/hr CPU, 1.15/hr T4). Since two unrelated auth mechanisms return the same 0.00, this is not a CLI/auth issue — it indicates the subscription allocation is not visible to the CLI's balance API for this account. Sessions still run; check actual CU consumption in the Colab web UI (colab.research.google.com).
+`usage` reports `Current balance: 0.00 compute units` under **both** OAuth2 and ADC authentication (two independent credential systems), while session creation and code execution work normally and the usage rate ticks up while a session is active (0.08/hr CPU, 1.15/hr T4). Since two unrelated auth mechanisms return the same 0.00, this is not a CLI/auth issue — it indicates the subscription allocation is not visible to the CLI's balance API for this account. **Tested on the AI Plus tier only** — subscribers to Colab Pro / Pro+ may see balances reported correctly. Sessions still run; check actual CU consumption in the Colab web UI (colab.research.google.com).
 
 ### Resource limits
 
