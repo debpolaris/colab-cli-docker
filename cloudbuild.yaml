@@ -1,0 +1,13 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/colab-cli:${_TAG}', '.']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/colab-cli:${_TAG}']
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/colab-cli:${_TAG}'
+substitutions:
+  _REGION: 'us-central1'
+  _REPO: 'colab-cli'
+  _TAG: '0.7.5'
+options:
+  logging: CLOUD_LOGGING_ONLY
