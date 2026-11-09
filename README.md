@@ -112,14 +112,20 @@ sh ~/colab-cli/run-colab.sh usage
 
 On first run, the CLI prints an authorization URL. Open it in a browser, sign in, and paste the code back into the terminal. The token is stored in the `colab-home` volume and persists across container restarts.
 
-**ADC (Application Default Credentials) — fallback only:**
+**ADC (Application Default Credentials) — verified working:**
 
-Use ADC only if OAuth2 fails (e.g., keyring issues). Requires a service account or user ADC JSON file.
+ADC is accepted by the Colab control plane (verified 2026-11-09, colab-cli 0.7.5): `usage`, `new` (CPU and T4 GPU), `exec`, and `stop` all work with `--auth adc`.
+
+Setup: run `gcloud auth application-default login` on a machine with gcloud (COS has none), then place the JSON at the well-known path inside the volume:
 
 ```bash
-# Place ADC JSON in the volume (e.g., via a temporary container)
-docker run --rm -v colab-home:/home/colab alpine sh -c 'cat > /home/colab/adc.json' < /path/to/adc.json
+# Stream from the gcloud machine into the volume (do not display contents)
+cat application_default_credentials.json | docker run --rm -i \
+  -v colab-home:/home/colab --entrypoint sh <IMAGE> -c \
+  'mkdir -p /home/colab/.config/gcloud && cat > /home/colab/.config/gcloud/application_default_credentials.json && chown 1000:1000 /home/colab/.config/gcloud/application_default_credentials.json && chmod 600 /home/colab/.config/gcloud/application_default_credentials.json'
+```
 
+```bash
 # Run with ADC
 sh ~/colab-cli/run-colab.sh --auth adc usage
 
@@ -127,7 +133,9 @@ sh ~/colab-cli/run-colab.sh --auth adc usage
 sh ~/colab-cli/run-colab.sh --auth adc --logtostderr usage
 ```
 
-If ADC returns permission errors, revert to OAuth2 (remove `--auth adc`).
+ADC and OAuth2 coexist in the volume (`token.json` + `application_default_credentials.json`); the `--auth` flag selects between them, and neither interferes with the other.
+
+**Limitation common to both auth methods:** `drivemount` still requires the interactive browser authorization on every new session, even with ADC. The Drive credential flow (`authorize-for-drive-credentials-ephemeral`) is bound to the VM endpoint and enforced server-side (`prompt=consent`) — independent of how the CLI authenticates to the control plane.
 
 ### Daily use
 
@@ -207,6 +215,10 @@ Restoring the volume preserves auth tokens. Note: if the OAuth refresh token is 
 - With a 50 CU/month allocation, continuous GPU time is limited to roughly **43 hours/month**; CPU allows roughly **625 hours/month**.
 - `--high-mem` requires Colab Pro/Pro+ (not available on AI Plus).
 - Stop GPU sessions immediately after use (`stop`) — the 14× rate drains CU fast.
+
+### Known anomaly: balance always 0.00 (verified)
+
+`usage` reports `Current balance: 0.00 compute units` under **both** OAuth2 and ADC authentication (two independent credential systems), while session creation and code execution work normally and the usage rate ticks up while a session is active (0.08/hr CPU, 1.15/hr T4). Since two unrelated auth mechanisms return the same 0.00, this is not a CLI/auth issue — it indicates the subscription allocation is not visible to the CLI's balance API for this account. Sessions still run; check actual CU consumption in the Colab web UI (colab.research.google.com).
 
 ### Resource limits
 
