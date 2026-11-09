@@ -8,7 +8,7 @@ Docker image for [google-colab-cli](https://github.com/googlecolab/google-colab-
 GitHub (source) → Cloud Build (build+push) → Artifact Registry → COS VM (docker run) → Colab VM (compute)
 ```
 
-The container is a thin client only. Heavy data stays on Google Drive via `colab drivemount` (mounted on the Colab VM, not the gateway).
+The container is a thin client only. Heavy data stays on Google Drive via `colab drivemount` (mounted on the Colab VM, not the gateway). No local data directories need to be mounted into the container.
 
 ## Build
 
@@ -71,6 +71,16 @@ Check available versions: https://pypi.org/project/google-colab-cli/#history
 
 ## Usage (on the VM)
 
+### COS noexec note
+
+Container-Optimized OS mounts the stateful partition (where home directories live) with `noexec`. Scripts cannot be executed directly (`./run-colab.sh` will fail with "Permission denied"). Always invoke via `sh`:
+
+```bash
+sh ~/colab-cli/run-colab.sh <command>
+```
+
+This applies to all scripts on the stateful partition. There is no functional limitation — `sh` invocation works identically.
+
 ### First-time setup
 
 ```bash
@@ -83,28 +93,87 @@ docker pull <REGION>-docker.pkg.dev/<PROJECT>/<REPO>/colab-cli:<TAG>
 # Create persistent volume for auth tokens
 docker volume create colab-home
 
-# Authenticate (interactive — opens URL, paste code back)
-docker run --rm -it -v colab-home:/home/colab <IMAGE> auth
+# Place run-colab.sh on the VM
+mkdir -p ~/colab-cli
+# (copy or create run-colab.sh here)
 ```
+
+### Authentication
+
+There is no standalone `auth` command. Authentication is triggered automatically when you run a command that requires account access for the first time.
+
+**OAuth2 (default, recommended for headless):**
+
+```bash
+sh ~/colab-cli/run-colab.sh usage
+```
+
+On first run, the CLI prints an authorization URL. Open it in a browser, sign in, and paste the code back into the terminal. The token is stored in the `colab-home` volume and persists across container restarts.
+
+**ADC (Application Default Credentials) — fallback only:**
+
+Use ADC only if OAuth2 fails (e.g., keyring issues). Requires a service account or user ADC JSON file.
+
+```bash
+# Place ADC JSON in the volume (e.g., via a temporary container)
+docker run --rm -v colab-home:/home/colab alpine sh -c 'cat > /home/colab/adc.json' < /path/to/adc.json
+
+# Run with ADC
+sh ~/colab-cli/run-colab.sh --auth adc usage
+
+# Verify credentials
+sh ~/colab-cli/run-colab.sh --auth adc --logtostderr usage
+```
+
+If ADC returns permission errors, revert to OAuth2 (remove `--auth adc`).
 
 ### Daily use
 
 ```bash
-# Via run-colab.sh (placed on the VM)
-./run-colab.sh balance
-./run-colab.sh new
-./run-colab.sh exec < script.py
-./run-colab.sh drivemount
-./run-colab.sh stop
-
-# Or via SSH from your workstation
-ssh <vm-alias> '~/colab-cli/run-colab.sh balance'
+sh ~/colab-cli/run-colab.sh usage              # CU balance and usage rate
+sh ~/colab-cli/run-colab.sh new                # create a session
+sh ~/colab-cli/run-colab.sh exec < script.py   # execute code
+sh ~/colab-cli/run-colab.sh drivemount         # mount Google Drive on Colab VM
+sh ~/colab-cli/run-colab.sh ls /content/drive/MyDrive
+sh ~/colab-cli/run-colab.sh stop               # release the runtime
+sh ~/colab-cli/run-colab.sh sessions           # list active sessions
 ```
+
+Via SSH from your workstation (nested through a jump host if needed):
+
+```bash
+ssh -t <jump-host> 'ssh-free-e2micro01 "sh ~/colab-cli/run-colab.sh usage"'
+```
+
+### Data path
+
+Data lives on Google Drive, mounted on the **Colab VM** (not the COS gateway):
+
+```bash
+sh ~/colab-cli/run-colab.sh drivemount
+sh ~/colab-cli/run-colab.sh exec < analysis.py   # reads /content/drive/MyDrive/...
+```
+
+No COS directories need to be bind-mounted into the container. Upload files to Google Drive as needed.
 
 ### Key paths inside the volume
 
-- Keyring: `/home/colab/.local/share/python_keyring/keyring_pass.cfg`
-- Auth persists across container restarts (volume-backed)
+| File | Container path | Purpose |
+|---|---|---|
+| Keyring | `/home/colab/.local/share/python_keyring/keyring_pass.cfg` | OAuth tokens |
+| Sessions | `/home/colab/.config/colab-cli/sessions.json` | Active session state |
+| OAuth config | `/home/colab/.colab-cli-oauth-config.json` | Client OAuth settings |
+
+Volume location on COS: `/var/lib/docker/volumes/colab-home/_data/`
+
+### Backup
+
+```bash
+docker run --rm -v colab-home:/data -v ~/colab-cli:/backup alpine \
+  tar czf /backup/colab-home-backup.tar.gz -C /data .
+```
+
+Restoring the volume preserves auth tokens. Note: if the OAuth refresh token is revoked server-side (password change, app removal), re-authentication is required regardless of backup.
 
 ### Resource limits
 
@@ -115,7 +184,7 @@ The default `run-colab.sh` sets `--memory=512m --memory-swap=512m` for a 1 GB VM
 - No tokens or secrets in the image. Auth lives in the `colab-home` volume only.
 - The keyring uses plaintext storage (`keyrings.alt.file.PlaintextKeyring`) — restrict volume access.
 - The Artifact Registry repository is private; the VM service account needs `roles/artifactregistry.reader`.
-- This repository is private. The project ID in `run-colab.sh` is not a credential.
+- The project ID in `run-colab.sh` is not a credential — it grants no access without authentication.
 
 ## Rollback / removal
 
