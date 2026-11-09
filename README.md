@@ -224,6 +224,11 @@ Restoring the volume preserves auth tokens. Note: if the OAuth refresh token is 
 
 The default `run-colab.sh` sets `--memory=512m --memory-swap=512m` for a 1 GB VM. Adjust if needed.
 
+## Limitations
+
+- **Interactive flows require a human.** `input()` prompts inside executed code and browser-consent flows (`drivemount` per-session authorization, first-time OAuth) cannot be completed headlessly or by an automation agent — a user must complete them interactively. Ordinary code errors are returned as tracebacks in the command output, so an agent or script can inspect the output, fix the code, and re-run `exec` until it works.
+- **`run` timeout defaults to 30 seconds.** Long-running scripts need `--timeout <seconds>` (e.g. `sh ~/colab-cli/run-colab.sh run --timeout 3600 script.py`) or should be executed via `exec` on a persistent session instead.
+
 ## Security notes
 
 - No tokens or secrets in the image. Auth lives in the `colab-home` volume only.
