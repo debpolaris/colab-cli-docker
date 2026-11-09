@@ -131,13 +131,15 @@ If ADC returns permission errors, revert to OAuth2 (remove `--auth adc`).
 
 ```bash
 sh ~/colab-cli/run-colab.sh usage              # CU balance and usage rate
-sh ~/colab-cli/run-colab.sh new                # create a session
+sh ~/colab-cli/run-colab.sh new                # create a session (required before drivemount)
+sh ~/colab-cli/run-colab.sh drivemount         # mount Drive (interactive, per-session auth)
 sh ~/colab-cli/run-colab.sh exec < script.py   # execute code
-sh ~/colab-cli/run-colab.sh drivemount         # mount Google Drive on Colab VM
 sh ~/colab-cli/run-colab.sh ls /content/drive/MyDrive
-sh ~/colab-cli/run-colab.sh stop               # release the runtime
+sh ~/colab-cli/run-colab.sh stop               # release the runtime (stops CU consumption)
 sh ~/colab-cli/run-colab.sh sessions           # list active sessions
 ```
+
+Typical workflow: `new` → `drivemount` → work → `stop`. Always `stop` when done to avoid CU drain.
 
 Via SSH from your workstation (nested through a jump host if needed):
 
@@ -145,24 +147,42 @@ Via SSH from your workstation (nested through a jump host if needed):
 ssh -t <jump-host> 'ssh-free-e2micro01 "sh ~/colab-cli/run-colab.sh usage"'
 ```
 
+For interactive commands (drivemount), ensure TTY is allocated through the full SSH chain (`ssh -t`).
+
 ### Data path
 
 Data lives on Google Drive, mounted on the **Colab VM** (not the COS gateway):
 
 ```bash
-sh ~/colab-cli/run-colab.sh drivemount
-sh ~/colab-cli/run-colab.sh exec < analysis.py   # reads /content/drive/MyDrive/...
+sh ~/colab-cli/run-colab.sh new                # 1. create session first
+sh ~/colab-cli/run-colab.sh drivemount         # 2. mount Drive (browser auth required)
+sh ~/colab-cli/run-colab.sh exec < analysis.py # 3. reads /content/drive/MyDrive/...
+sh ~/colab-cli/run-colab.sh stop               # 4. release when done
 ```
 
 No COS directories need to be bind-mounted into the container. Upload files to Google Drive as needed.
 
+**Important:** `drivemount` requires an active session (`new` first). Drive authorization is **per-session** — each new Colab VM requires a fresh browser authorization. This is by design (the OAuth token is bound to the VM endpoint).
+
+### Auth persistence summary
+
+| Credential | Persists? | Notes |
+|---|---|---|
+| Colab API token (`token.json`) | **Yes** | Survives container restarts and new sessions. One-time auth. |
+| Drive mount authorization | **No** | Per-session. Must re-authorize in browser after each `new`. |
+
 ### Key paths inside the volume
+
+Actual files written by colab-cli 0.7.5 (verified on the VM):
 
 | File | Container path | Purpose |
 |---|---|---|
-| Keyring | `/home/colab/.local/share/python_keyring/keyring_pass.cfg` | OAuth tokens |
-| Sessions | `/home/colab/.config/colab-cli/sessions.json` | Active session state |
-| OAuth config | `/home/colab/.colab-cli-oauth-config.json` | Client OAuth settings |
+| OAuth token | `/home/colab/.config/colab-cli/token.json` | Colab API credentials (persistent) |
+| Settings | `/home/colab/.config/colab-cli/settings.json` | Session/account settings |
+| Lock file | `/home/colab/.config/colab-cli/settings.json.lock` | Settings lock |
+| Log | `/home/colab/.config/colab-cli/colab.log` | CLI log |
+
+Note: colab-cli 0.7.5 does **not** use the OS keyring — tokens are stored directly in `token.json`. The `keyrings.alt` package and `PYTHON_KEYRING_BACKEND` env var in the Dockerfile are harmless but unnecessary for this version.
 
 Volume location on COS: `/var/lib/docker/volumes/colab-home/_data/`
 
@@ -182,7 +202,7 @@ The default `run-colab.sh` sets `--memory=512m --memory-swap=512m` for a 1 GB VM
 ## Security notes
 
 - No tokens or secrets in the image. Auth lives in the `colab-home` volume only.
-- The keyring uses plaintext storage (`keyrings.alt.file.PlaintextKeyring`) — restrict volume access.
+- OAuth tokens are stored as plaintext JSON (`token.json`) — restrict volume access.
 - The Artifact Registry repository is private; the VM service account needs `roles/artifactregistry.reader`.
 - The project ID in `run-colab.sh` is not a credential — it grants no access without authentication.
 
