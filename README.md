@@ -67,6 +67,8 @@ Adjust `keepCount` or `olderThan` as needed. The keep rule takes precedence over
 
 The container uses `--rm` and read-only layers, so `colab update --install` inside the container does not persist. Always rebuild to update.
 
+**Note:** Cloud Build substitutions (`_REGION`, `_REPO`, `_TAG`) only affect the image built and pushed to Artifact Registry. They do **not** propagate to `run-colab.sh` — it is a static script deployed to the VM, not a build artifact. Keep the three version references in sync manually (Dockerfile pin, `_TAG` substitution, `run-colab.sh` IMAGE line).
+
 Check available versions: https://pypi.org/project/google-colab-cli/#history
 
 ## Usage (on the VM)
@@ -194,6 +196,17 @@ docker run --rm -v colab-home:/data -v ~/colab-cli:/backup alpine \
 ```
 
 Restoring the volume preserves auth tokens. Note: if the OAuth refresh token is revoked server-side (password change, app removal), re-authentication is required regardless of backup.
+
+### Verified GPU behavior (tested on AI Plus tier, colab-cli 0.7.5)
+
+- `new --gpu T4` allocates a Tesla T4 successfully on the AI Plus tier. Supported variants: T4, L4, G4, H100, A100.
+- CUDA is available inside the session (`torch.cuda.is_available()` → True).
+- CU burn rate (measured via `usage`):
+  - CPU session: **0.08/hr**
+  - T4 GPU session: **1.15/hr** (~14× CPU)
+- With a 50 CU/month allocation, continuous GPU time is limited to roughly **43 hours/month**; CPU allows roughly **625 hours/month**.
+- `--high-mem` requires Colab Pro/Pro+ (not available on AI Plus).
+- Stop GPU sessions immediately after use (`stop`) — the 14× rate drains CU fast.
 
 ### Resource limits
 
