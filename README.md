@@ -31,13 +31,13 @@ gcloud builds submit --config=cloudbuild.yaml --project=<PROJECT_ID> .
 |---|---|---|
 | `_REGION` | `us-central1` | Artifact Registry region. Change to match your VM region for free egress. |
 | `_REPO` | `colab-cli` | Repository name in Artifact Registry. |
-| `_TAG` | `0.7.5` | Image tag. Set to the colab-cli version being built. |
+| `_TAG` | `0.8.0` | Image tag. Set to the colab-cli version being built. |
 
 Override at submit time:
 
 ```bash
 gcloud builds submit --config=cloudbuild.yaml \
-  --substitutions=_REGION=us-east1,_TAG=0.8.0 .
+  --substitutions=_REGION=us-east1,_TAG=0.9.0 .
 ```
 
 ### Cleanup policy (cleanup-policy.json)
@@ -110,7 +110,7 @@ There is no standalone `auth` command. Authentication is triggered automatically
 sh ~/colab-cli/run-colab.sh usage
 ```
 
-On first run, the CLI prints an authorization URL. Open it in a browser, sign in, and paste the code back into the terminal. The token is stored in the `colab-home` volume and persists across container restarts.
+On first run, the CLI prints an authorization URL. Open it in a browser, sign in, and paste the code back into the terminal. The token is stored in the `colab-home` volume via the keyring backend (see [Key paths](#key-paths-inside-the-volume)) and persists across container restarts.
 
 **ADC (Application Default Credentials) — verified working:**
 
@@ -133,7 +133,7 @@ sh ~/colab-cli/run-colab.sh --auth adc usage
 sh ~/colab-cli/run-colab.sh --auth adc --logtostderr usage
 ```
 
-ADC and OAuth2 coexist in the volume (`token.json` + `application_default_credentials.json`); the `--auth` flag selects between them, and neither interferes with the other.
+ADC and OAuth2 coexist in the volume (keyring token file + `application_default_credentials.json`); the `--auth` flag selects between them, and neither interferes with the other.
 
 **Limitation common to both auth methods:** `drivemount` still requires the interactive browser authorization on every new session, even with ADC. The Drive credential flow (`authorize-for-drive-credentials-ephemeral`) is bound to the VM endpoint and enforced server-side (`prompt=consent`) — independent of how the CLI authenticates to the control plane.
 
@@ -178,21 +178,23 @@ No COS directories need to be bind-mounted into the container. Upload files to G
 
 | Credential | Persists? | Notes |
 |---|---|---|
-| Colab API token (`token.json`) | **Yes** | Survives container restarts and new sessions. One-time auth. |
+| Colab API token (keyring file) | **Yes** | Survives container restarts and new sessions. One-time auth. |
 | Drive mount authorization | **No** | Per-session. Must re-authorize in browser after each `new`. |
 
 ### Key paths inside the volume
 
-Actual files written by colab-cli 0.7.5 (verified on the VM):
+Actual files written by colab-cli 0.8.0 (verified on the VM):
 
 | File | Container path | Purpose |
 |---|---|---|
-| OAuth token | `/home/colab/.config/colab-cli/token.json` | Colab API credentials (persistent) |
+| OAuth token (keyring) | `/home/colab/.local/share/python_keyring/keyring_pass.cfg` | Colab API credentials (persistent) |
 | Settings | `/home/colab/.config/colab-cli/settings.json` | Session/account settings |
 | Lock file | `/home/colab/.config/colab-cli/settings.json.lock` | Settings lock |
+| Session state | `/home/colab/.config/colab-cli/sessions.json` | Active session registry |
+| Session history | `/home/colab/.config/colab-cli/history/` | Per-session logs |
 | Log | `/home/colab/.config/colab-cli/colab.log` | CLI log |
 
-Note: colab-cli 0.7.5 does **not** use the OS keyring — tokens are stored directly in `token.json`. The `keyrings.alt` package and `PYTHON_KEYRING_BACKEND` env var in the Dockerfile are harmless but unnecessary for this version.
+Token storage changed in colab-cli 0.8.0: the token moved from `token.json` to the OS keyring (`keyring>=25.7.0` became a dependency, service name `google-colab-cli`). Containers have no secret service, so the Dockerfile ships `keyrings.alt` and sets `PYTHON_KEYRING_BACKEND=keyrings.alt.file.PlaintextKeyring` to make the keyring usable headlessly. On the first 0.8.0 run, an existing legacy `~/.config/colab-cli/token.json` (the 0.7.5 location) is read, saved into the keyring file, and deleted (verified 2026-11-11).
 
 Volume location on COS: `/var/lib/docker/volumes/colab-home/_data/`
 
@@ -224,6 +226,24 @@ Restoring the volume preserves auth tokens. Note: if the OAuth refresh token is 
 
 The default `run-colab.sh` sets `--memory=512m --memory-swap=512m` for a 1 GB VM. Adjust if needed.
 
+## Image size and slimming
+
+The upstream CLI pins `jupyter-kernel-client==0.9.0`, which depends on `jupyter-mimetypes`, which in turn pulls in **pyarrow** (~170 MB installed) for Arrow IPC DataFrame serialization. colab-cli never imports that code path — and the pandas integration it depends on is already broken in this image (pandas is not installed) — so pyarrow is uninstalled in the Dockerfile without functional regression.
+
+Measured (`docker image ls`, uncompressed):
+
+| Tag | colab-cli | Size |
+|---|---|---|
+| 0.7.5 (vanilla) | 0.7.5 | 381 MB |
+| 0.7.5-r2 | 0.7.5 | 205 MB |
+| 0.8.0 | 0.8.0 | 207 MB (adds keyring + keyrings.alt, ~2 MB) |
+
+Artifact Registry compressed sizes (from manifest descriptor sizes): ~124 MiB for the vanilla 0.7.5 image, ~69 MiB for the slimmed 0.8.0 image.
+
+`pip check` inside the image reports one expected warning — `jupyter-mimetypes 0.2.0 requires pyarrow, which is not installed` — which is harmless: nothing in colab-cli imports the pandas/arrow path.
+
+The base image is `python:3.12-slim`. Slimmer bases (Wolfi/Chainguard, distroless) were evaluated and rejected: the pip layer, not the base, dominates the size, and a base swap does not reduce runtime memory.
+
 ## Limitations
 
 - **Interactive flows require a human.** `input()` prompts inside executed code and browser-consent flows (`drivemount` per-session authorization, first-time OAuth) cannot be completed headlessly or by an automation agent — a user must complete them interactively. Ordinary code errors are returned as tracebacks in the command output, so an agent or script can inspect the output, fix the code, and re-run `exec` until it works.
@@ -232,7 +252,7 @@ The default `run-colab.sh` sets `--memory=512m --memory-swap=512m` for a 1 GB VM
 ## Security notes
 
 - No tokens or secrets in the image. Auth lives in the `colab-home` volume only.
-- OAuth tokens are stored as plaintext JSON (`token.json`) — restrict volume access.
+- OAuth tokens are stored in plaintext (keyring file backend) — restrict volume access.
 - The Artifact Registry repository is private; the VM service account needs `roles/artifactregistry.reader`.
 - The project ID in `run-colab.sh` is not a credential — it grants no access without authentication.
 
