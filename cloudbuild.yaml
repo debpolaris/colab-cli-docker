@@ -8,6 +8,6 @@ images:
 substitutions:
   _REGION: 'us-central1'
   _REPO: 'colab-cli'
-  _TAG: '0.7.5'
+  _TAG: '0.7.5-r2'
 options:
   logging: CLOUD_LOGGING_ONLY
